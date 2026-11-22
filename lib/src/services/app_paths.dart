@@ -46,6 +46,17 @@ class AppPaths {
     return p.dirname(exe);
   }
 
+  /// התוכנה הופעלה מתוך "תוכנות נוספות" של עדכוני אוצריא: שם היא יושבת ב-`OtzariaData/.../apps/<id>/`,
+  /// ולצידה שני קבצים שעדכוני אוצריא כותבים לכל תוכנה.
+  static bool launchedFromOtzariaUpdates([String? dir]) {
+    final d = dir ?? programDir();
+    try {
+      return File(p.join(d, 'descriptor.json')).existsSync() && File(p.join(d, 'installer.json')).existsSync();
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// תיקיית הגדרות פר-מחשב (לא נוסעת עם דיסק און קי).
   static String userConfigDir() => _userConfigDir();
 
