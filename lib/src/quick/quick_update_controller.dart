@@ -17,8 +17,10 @@ enum QuickPhase { starting, needsLocation, working, done, failed }
 /// במחשב מחובר: מורידה לכונן את המסד המלא ואת קובצי העדכון של עד [stepsBack] הגרסאות האחרונות.
 /// במחשב בלי רשת: מעדכנת (או מתקינה בפעם הראשונה) את המסד מהכונן.
 class QuickUpdateController extends ChangeNotifier {
-  QuickUpdateController({required this.mirrorDir, DbController? db})
-    : db = db ?? DbController(AppController()..dataDir = p.dirname(mirrorDir)) {
+  /// [findOtzariaDb]: איפה אוצריא קוראת את המסד (מוזרק בבדיקות, כדי לא לקרוא את אוצריא של המחשב).
+  QuickUpdateController({required this.mirrorDir, DbController? db, Future<String?> Function()? findOtzariaDb})
+    : db = db ?? DbController(AppController()..dataDir = p.dirname(mirrorDir)),
+      _findOtzariaDb = findOtzariaDb ?? OtzariaLocator.findDbPath {
     this.db.addListener(notifyListeners);
   }
 
@@ -28,6 +30,7 @@ class QuickUpdateController extends ChangeNotifier {
   /// תיקיית קובצי המסד בכונן, ליד התוכנה.
   final String mirrorDir;
   final DbController db;
+  final Future<String?> Function() _findOtzariaDb;
 
   QuickPhase phase = QuickPhase.starting;
 
@@ -70,7 +73,7 @@ class QuickUpdateController extends ChangeNotifier {
         await db.init(pinMirrorDir: mirrorDir);
       } else {
         // ניסיון חוזר: ייתכן שבינתיים המסד צורף באוצריא, או שהתקנה קודמת נקטעה.
-        db.otzariaDbPath = await OtzariaLocator.findDbPath();
+        db.otzariaDbPath = await _findOtzariaDb();
         if (db.targetDb.isNotEmpty) await DbService.recoverInterrupted(db.targetDb);
         await db.refreshMirror();
         await db.checkRemote();

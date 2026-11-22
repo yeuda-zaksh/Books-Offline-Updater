@@ -201,7 +201,11 @@ void main() {
     late QuickUpdateController c;
     setUp(() {
       db = _FakeDb();
-      c = QuickUpdateController(mirrorDir: p.join(tmp.path, dbMirrorDirName), db: db);
+      c = QuickUpdateController(
+        mirrorDir: p.join(tmp.path, dbMirrorDirName),
+        db: db,
+        findOtzariaDb: () async => db.attachedPath,
+      );
     });
     tearDown(() => c.dispose());
 
