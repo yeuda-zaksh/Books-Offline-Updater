@@ -15,11 +15,25 @@ class AppPaths {
   static String? _sfxParent() {
     if (!Platform.isWindows) return null;
     final dir = p.dirname(Platform.resolvedExecutable);
-    final temp = (Platform.environment['TEMP'] ?? Platform.environment['TMP'] ?? '').toLowerCase();
-    if (temp.isNotEmpty && p.basename(dir).startsWith('7z') && p.dirname(dir).toLowerCase() == p.normalize(temp)) {
+    final temp = Platform.environment['TEMP'] ?? Platform.environment['TMP'] ?? '';
+    if (temp.isNotEmpty && p.basename(dir).startsWith('7z') && _samePath(p.dirname(dir), temp)) {
       return windowsParentExecutable();
     }
     return null;
+  }
+
+  /// השוואת נתיבים בווינדוס גם כשאחד מהם בצורה המקוצרת (8.3), כמו TEMP של משתמש ששמו מכיל רווח או עברית
+  /// (`C:\Users\ABCDEF~1\...`): בלי זה התוכנה לא זיהתה שהיא רצה מ-exe יחיד.
+  static bool _samePath(String a, String b) {
+    String full(String x) {
+      try {
+        return Directory(x).resolveSymbolicLinksSync();
+      } catch (_) {
+        return x;
+      }
+    }
+
+    return p.equals(full(a).toLowerCase(), full(b).toLowerCase()) || p.equals(a.toLowerCase(), b.toLowerCase());
   }
 
   static final _macMarker = '.app${Platform.pathSeparator}Contents${Platform.pathSeparator}MacOS';

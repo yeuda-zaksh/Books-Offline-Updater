@@ -8,6 +8,7 @@ import 'src/controllers/app_controller.dart';
 import 'src/db/db_controller.dart' show dbMirrorDirName;
 import 'src/quick/quick_update_controller.dart';
 import 'src/quick/quick_update_screen.dart';
+import 'src/quick/quick_window.dart';
 import 'src/services/app_paths.dart';
 import 'src/services/single_instance.dart';
 import 'src/screens/app_shell.dart';
@@ -25,8 +26,9 @@ Future<void> main(List<String> args) async {
     return;
   }
   _instanceLock = lock;
-  // מתוך עדכוני אוצריא (או --quick): מסך עדכון יחיד שמתחיל לעבוד מיד.
+  // מתוך עדכוני אוצריא (או --quick): חלון קטן לעדכון המסד בלבד.
   if (args.contains('--quick') || AppPaths.launchedFromOtzariaUpdates()) {
+    QuickWindow.setUp(width: quickWindowWidth, height: quickWindowHeight, title: 'עדכון מסד הספרים');
     runApp(QuickUpdateApp(mirrorDir: p.join(AppPaths.programDir(), dbMirrorDirName)));
     return;
   }
@@ -42,30 +44,20 @@ class QuickUpdateApp extends StatefulWidget {
 }
 
 class _QuickUpdateAppState extends State<QuickUpdateApp> {
-  late QuickUpdateController? _quick = QuickUpdateController(mirrorDir: widget.mirrorDir);
-
-  void _openFull() {
-    final q = _quick;
-    if (q == null || q.running) return;
-    setState(() => _quick = null);
-    WidgetsBinding.instance.addPostFrameCallback((_) => q.dispose());
-  }
+  late final QuickUpdateController _quick = QuickUpdateController(mirrorDir: widget.mirrorDir);
 
   @override
   void dispose() {
-    _quick?.dispose();
+    _quick.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final q = _quick;
-    if (q == null) return const OfflineUpdateApp();
     return MaterialApp(
       title: 'עדכון מסד הספרים',
       debugShowCheckedModeBanner: false,
-      theme: AppTheme.light(),
-      darkTheme: AppTheme.dark(),
+      theme: quickTheme(),
       locale: const Locale('he', 'IL'),
       supportedLocales: const [Locale('he', 'IL')],
       localizationsDelegates: const [
@@ -75,7 +67,7 @@ class _QuickUpdateAppState extends State<QuickUpdateApp> {
       ],
       builder: (context, child) =>
           Directionality(textDirection: TextDirection.rtl, child: child ?? const SizedBox.shrink()),
-      home: QuickUpdateScreen(controller: q, onOpenFull: _openFull),
+      home: QuickUpdateScreen(controller: _quick),
     );
   }
 }

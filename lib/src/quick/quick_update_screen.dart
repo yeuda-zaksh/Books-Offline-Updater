@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io';
 import 'dart:ui' show AppExitResponse;
 
@@ -6,32 +5,65 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../db/db_controller.dart' show DbController;
-import '../theme/app_tokens.dart';
-import '../widgets/db_job_panel.dart';
+import '../services/otzaria_locator.dart';
 import 'quick_update_controller.dart';
+import 'quick_window.dart';
 
-/// מסך יחיד של "עדכון מהיר": מתחיל לעבוד מיד, ונסגר לבד אחרי הצלחה.
+/// צבעי המסך, ברוח מסייע ההורדות של אוצריא.
+class QuickColors {
+  static const page = Color(0xFFF6EDE5);
+  static const titleBar = Color(0xFFF3E6DA);
+  static const titleBarBorder = Color(0xFFE1D4C8);
+  static const captionHover = Color(0xFFEDE4DC);
+  static const card = Color(0xFFFFF8F4);
+  static const divider = Color(0xFFD3C4B4);
+  static const primary = Color(0xFF805610);
+  static const primaryHover = Color(0xFF6E4A0D);
+  static const gold = Color(0xFFB08A3E);
+  static const text = Color(0xFF201B13);
+  static const muted = Color(0xFF4F4539);
+  static const faint = Color(0xFF817567);
+  static const track = Color(0xFFE8DCCD);
+  static const tile = Color(0xFFFBDEBC);
+  static const onTonal = Color(0xFF56442A);
+  static const error = Color(0xFFBA1A1A);
+  static const disabled = Color(0xFFDDD3CC);
+  static const disabledText = Color(0xFFA59D95);
+}
+
+ThemeData quickTheme() {
+  const scheme = ColorScheme.light(
+    primary: QuickColors.primary,
+    onPrimary: Colors.white,
+    surface: QuickColors.card,
+    onSurface: QuickColors.text,
+    error: QuickColors.error,
+  );
+  return ThemeData(
+    useMaterial3: true,
+    colorScheme: scheme,
+    scaffoldBackgroundColor: QuickColors.page,
+    dialogTheme: const DialogThemeData(backgroundColor: QuickColors.card),
+    progressIndicatorTheme: const ProgressIndicatorThemeData(color: QuickColors.primary),
+  );
+}
+
+/// גודל החלון (בפיקסלים לוגיים), כמו מסייע ההורדות של אוצריא.
+const quickWindowWidth = 400.0;
+const quickWindowHeight = 620.0;
+
+/// מסך יחיד של "עדכון מהיר": בדיקה אוטומטית בפתיחה, ואז כפתור אחד.
 class QuickUpdateScreen extends StatefulWidget {
-  const QuickUpdateScreen({
-    super.key,
-    required this.controller,
-    this.onOpenFull,
-    this.autoStart = true,
-    this.autoCloseAfter = const Duration(seconds: 10),
-    this.onClose,
-  });
+  const QuickUpdateScreen({super.key, required this.controller, this.autoStart = true, this.onClose, this.pickFolder});
 
   final QuickUpdateController controller;
-
-  /// פתיחת התוכנה המלאה (כל הלשוניות) במקום המסך הזה.
-  final VoidCallback? onOpenFull;
   final bool autoStart;
-
-  /// `null`: לא נסגר לבד.
-  final Duration? autoCloseAfter;
 
   /// ברירת מחדל: יציאה מהתהליך (עדכוני אוצריא ממתינה לה).
   final VoidCallback? onClose;
+
+  /// בחירת תיקייה (מוזרק בבדיקות). ברירת מחדל: חלון בחירת תיקייה של המערכת.
+  final Future<String?> Function(String initialDirectory)? pickFolder;
 
   @override
   State<QuickUpdateScreen> createState() => _QuickUpdateScreenState();
@@ -39,53 +71,41 @@ class QuickUpdateScreen extends StatefulWidget {
 
 class _QuickUpdateScreenState extends State<QuickUpdateScreen> {
   QuickUpdateController get c => widget.controller;
-  Timer? _closeTimer;
-  int _secondsLeft = 0;
-  QuickPhase? _lastPhase;
 
-  late final AppLifecycleListener _lifecycle = AppLifecycleListener(onExitRequested: _confirmExit);
+  late final AppLifecycleListener _lifecycle = AppLifecycleListener(onExitRequested: _onExitRequested);
 
   @override
   void initState() {
     super.initState();
     _lifecycle;
     c.db.confirm = _confirm;
-    c.addListener(_onChange);
     if (widget.autoStart) WidgetsBinding.instance.addPostFrameCallback((_) => c.start());
   }
 
   @override
   void dispose() {
-    _closeTimer?.cancel();
-    c.removeListener(_onChange);
     _lifecycle.dispose();
     super.dispose();
   }
 
-  void _onChange() {
-    if (c.phase == _lastPhase) return;
-    _lastPhase = c.phase;
-    _closeTimer?.cancel();
-    final after = widget.autoCloseAfter;
-    if (c.canAutoClose && after != null) {
-      _secondsLeft = after.inSeconds;
-      _closeTimer = Timer.periodic(const Duration(seconds: 1), (t) {
-        if (!mounted) return;
-        setState(() => _secondsLeft--);
-        if (_secondsLeft <= 0) {
-          t.cancel();
-          _close();
-        }
-      });
-    }
+  Future<AppExitResponse> _onExitRequested() async => await _mayClose() ? AppExitResponse.exit : AppExitResponse.cancel;
+
+  Future<bool> _mayClose() async {
+    if (!c.running || !mounted) return true;
+    final ok = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => _Dialog(
+        text: 'הפעולה עדיין רצה. לסגור בכל זאת?\nהמסד הקיים לא ייפגע, ואפשר להמשיך אחר כך.',
+        okText: 'לסגור',
+        cancelText: 'להישאר',
+      ),
+    );
+    return ok == true;
   }
 
-  void _stopAutoClose() {
-    _closeTimer?.cancel();
-    setState(() => _closeTimer = null);
-  }
-
-  void _close() {
+  Future<void> _close() async {
+    if (!await _mayClose()) return;
     final cb = widget.onClose;
     if (cb != null) {
       cb();
@@ -94,48 +114,38 @@ class _QuickUpdateScreenState extends State<QuickUpdateScreen> {
     }
   }
 
-  Future<AppExitResponse> _confirmExit() async {
-    if (!c.running || !mounted) return AppExitResponse.exit;
-    final close = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        title: const Text('העדכון בעיצומו'),
-        content: const Text('העדכון עדיין רץ. לסגור בכל זאת? (המסד הקיים לא ייפגע, ואפשר להמשיך אחר כך)'),
-        actions: [
-          FilledButton(autofocus: true, onPressed: () => Navigator.pop(ctx, false), child: const Text('להישאר')),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('לסגור בכל זאת')),
-        ],
-      ),
-    );
-    return close == true ? AppExitResponse.exit : AppExitResponse.cancel;
-  }
-
   Future<bool> _confirm(String message) async {
     if (!mounted) return false;
     final ok = await showDialog<bool>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('אישור'),
-        content: Text(
-          message == DbController.unknownDbConfirmText
-              ? 'גרסת המסד במחשב הזה לא מזוהה לפי הקבצים שבכונן. זה קורה כשהמסד ישן מ-10 גרסאות, '
-                    'או כשהכונן הוכן לפני שהמסד הזה עודכן (ואז המסד שבמחשב חדש יותר מזה שבכונן).\n\n'
-                    'להמשיך ולהחליף אותו במסד המלא שבכונן?'
-              : message,
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('ביטול')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('המשך')),
-        ],
+      builder: (ctx) => _Dialog(
+        text: message == DbController.unknownDbConfirmText
+            ? 'גרסת המסד במחשב הזה לא מזוהה, והוא יוחלף במסד המלא שבכונן.\n\n'
+                  'אם המסד במחשב חדש יותר מזה שבכונן, הכינו קודם את הכונן מחדש במחשב מחובר.'
+            : message,
+        okText: 'להחליף',
+        cancelText: 'ביטול',
       ),
     );
     return ok == true;
   }
 
-  Future<void> _pickOtherFolder() async {
-    final dir = await FilePicker.getDirectoryPath(dialogTitle: 'בחירת תיקייה למסד הספרים');
-    if (dir != null) await c.chooseFolder(dir);
+  Future<void> _chooseLocation() async {
+    final initial = c.proposedFolder;
+    // התיקייה של אוצריא למסדים אישיים: נוצרת כדי שחלון הבחירה ייפתח בה.
+    if (widget.pickFolder == null && OtzariaLocator.dataRoot() != null) {
+      try {
+        Directory(initial).createSync(recursive: true);
+      } catch (_) {}
+    }
+    final pick =
+        widget.pickFolder ??
+        (String dir) => FilePicker.getDirectoryPath(
+          dialogTitle: 'בחירת מיקום למסד הספרים',
+          initialDirectory: Directory(dir).existsSync() ? dir : null,
+        );
+    final folder = await pick(initial);
+    if (folder != null) await c.installTo(folder);
   }
 
   @override
@@ -143,185 +153,439 @@ class _QuickUpdateScreenState extends State<QuickUpdateScreen> {
     return ListenableBuilder(
       listenable: c,
       builder: (context, _) => Scaffold(
-        body: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(AppTokens.spaceLG),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 640),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _header(context),
-                  const SizedBox(height: AppTokens.spaceLG),
-                  ..._body(context),
-                  if (widget.onOpenFull != null && !c.running) ...[
-                    const SizedBox(height: AppTokens.spaceXL),
-                    Align(
-                      alignment: AlignmentDirectional.centerStart,
-                      child: TextButton(onPressed: widget.onOpenFull, child: const Text('פתיחת התוכנה המלאה')),
-                    ),
+        body: Column(
+          children: [
+            _TitleBar(onClose: _close),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(24, 20, 24, 16),
+                child: Column(
+                  children: [
+                    const _Hero(),
+                    Expanded(child: Center(child: _state())),
+                    SizedBox(height: 44, child: _buttons()),
+                    const SizedBox(height: 14),
+                    const _Disclaimer(),
                   ],
-                ],
+                ),
               ),
             ),
-          ),
+          ],
         ),
       ),
     );
   }
 
-  Widget _header(BuildContext context) {
-    final theme = Theme.of(context);
-    final sub = switch (c.online) {
-      true => 'מחשב מחובר: הכנת הכונן למחשב ללא רשת',
-      false => 'עדכון המסד מהכונן',
-      null => 'בודק חיבור לרשת...',
-    };
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('עדכון מסד הספרים הלא רשמי', style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700)),
-        const SizedBox(height: AppTokens.spaceXS),
-        Text(sub, style: theme.textTheme.titleMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-      ],
-    );
+  Widget _state() {
+    switch (c.phase) {
+      case QuickPhase.checking:
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(width: 28, height: 28, child: CircularProgressIndicator(strokeWidth: 3)),
+            const SizedBox(height: 14),
+            Text(c.online == false ? 'בודק את המסד...' : 'בודק עדכונים...', style: _muted),
+          ],
+        );
+      case QuickPhase.ready:
+        return _Lines(title: c.title, detail: c.detail);
+      case QuickPhase.working:
+        return _Progress(c: c);
+      case QuickPhase.done:
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const _Badge(ok: true),
+            const SizedBox(height: 14),
+            _Lines(title: c.title, detail: c.detail),
+            if (c.warning != null) ...[const SizedBox(height: 12), _Note(text: c.warning!)],
+          ],
+        );
+      case QuickPhase.failed:
+        final soft = c.stoppedByUser;
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _Badge(ok: false, soft: soft),
+            const SizedBox(height: 12),
+            Text(soft ? 'הפעולה נעצרה' : 'לא הצלחנו', style: _title),
+            const SizedBox(height: 6),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 110),
+              child: SingleChildScrollView(
+                child: SelectableText(
+                  c.message.isEmpty ? 'הפעולה לא הושלמה.' : c.message,
+                  textAlign: TextAlign.center,
+                  style: _muted,
+                ),
+              ),
+            ),
+          ],
+        );
+    }
   }
 
-  List<Widget> _body(BuildContext context) {
-    final theme = Theme.of(context);
+  Widget _buttons() {
     switch (c.phase) {
-      case QuickPhase.starting:
-        final insp = c.db.inspecting;
-        final pr = c.db.inspectProgress;
-        return [
-          Text(insp ? 'מזהה את גרסת המסד במחשב...' : 'מתכונן...', style: theme.textTheme.titleMedium),
-          const SizedBox(height: AppTokens.spaceMD),
-          ClipRRect(
-            borderRadius: AppTokens.borderRadiusAll,
-            child: LinearProgressIndicator(value: insp ? pr : null, minHeight: 12),
-          ),
-        ];
-      case QuickPhase.needsLocation:
-        return [
-          Text('זו הפעם הראשונה שהמסד מותקן במחשב הזה.', style: theme.textTheme.titleMedium),
-          const SizedBox(height: AppTokens.spaceSM),
-          Text(
-            c.otzariaFound
-                ? 'המסד יישמר בתיקייה הבאה (מיקום ברירת המחדל של אוצריא למסדים אישיים), '
-                      'ויצורף לאוצריא כך שהספרים יופיעו בה מעצמם:'
-                : 'אוצריא לא נמצאה במחשב הזה (או שעוד לא נפתחה בו). המסד יישמר בתיקייה הבאה, '
-                      'ואחרי שאוצריא תותקן ותיפתח פעם אחת, לחצו שוב על העדכון כדי לצרף אליה את המסד:',
-          ),
-          const SizedBox(height: AppTokens.spaceSM),
-          Container(
-            padding: const EdgeInsets.all(AppTokens.spaceSM),
-            decoration: BoxDecoration(
-              color: theme.colorScheme.surfaceContainerHighest,
-              borderRadius: AppTokens.borderRadiusAll,
-            ),
-            child: SelectableText(c.proposedFolder, textDirection: TextDirection.ltr),
-          ),
-          const SizedBox(height: AppTokens.spaceLG),
-          Row(
-            children: [
-              FilledButton.icon(
-                onPressed: c.running ? null : () => c.chooseFolder(c.proposedFolder),
-                icon: const Icon(Icons.check),
-                label: const Text('התקנה בתיקייה הזו'),
-              ),
-              const SizedBox(width: AppTokens.spaceSM),
-              OutlinedButton.icon(
-                onPressed: c.running ? null : _pickOtherFolder,
-                icon: const Icon(Icons.folder_open),
-                label: const Text('בחירת תיקייה אחרת'),
-              ),
-            ],
-          ),
-        ];
+      case QuickPhase.checking:
+        return const SizedBox.shrink();
+      case QuickPhase.ready:
+        return switch (c.action) {
+          QuickAction.download => _PrimaryButton(text: 'הורדה', onPressed: c.running ? null : c.run),
+          QuickAction.update => _PrimaryButton(text: 'עדכון', onPressed: c.running ? null : c.run),
+          QuickAction.install => _PrimaryButton(text: 'בחירת מיקום', onPressed: c.running ? null : _chooseLocation),
+          null => const SizedBox.shrink(),
+        };
       case QuickPhase.working:
-        return [
-          if (c.db.activity != null)
-            DbProgressPanel(db: c.db)
-          else ...[
-            Text(c.db.inspecting ? 'מזהה את גרסת המסד במחשב...' : 'מתכונן...', style: theme.textTheme.titleMedium),
-            const SizedBox(height: AppTokens.spaceMD),
-            ClipRRect(
-              borderRadius: AppTokens.borderRadiusAll,
-              child: LinearProgressIndicator(value: c.db.inspecting ? c.db.inspectProgress : null, minHeight: 12),
-            ),
-          ],
-        ];
+        final a = c.db.activity;
+        return _GhostButton(
+          text: a?.cancelled == true ? 'עוצר...' : 'עצירה',
+          onPressed: a == null || a.cancelled ? null : c.db.cancel,
+        );
       case QuickPhase.done:
-        return [
-          _Result(text: c.message, error: false),
-          if (c.online == true) ...[
-            const SizedBox(height: AppTokens.spaceSM),
-            Text(
-              'עכשיו חברו את הכונן למחשב ללא רשת, ושם לחצו שוב על אותה תוכנה בעדכוני אוצריא.',
-              style: theme.textTheme.titleMedium,
-            ),
-          ] else ...[
-            const SizedBox(height: AppTokens.spaceSM),
-            if (c.canAutoClose) Text('אפשר לפתוח את אוצריא.', style: theme.textTheme.titleMedium),
-          ],
-          const SizedBox(height: AppTokens.spaceLG),
-          Row(
-            children: [
-              FilledButton(onPressed: _close, child: const Text('סגור')),
-              const SizedBox(width: AppTokens.spaceMD),
-              if (_closeTimer != null) ...[
-                Text('נסגר בעוד $_secondsLeft שניות'),
-                TextButton(onPressed: _stopAutoClose, child: const Text('השאר פתוח')),
-              ],
-            ],
-          ),
-        ];
+        return _PrimaryButton(text: 'סגירה', onPressed: _close);
       case QuickPhase.failed:
-        return [
-          _Result(text: c.message.isEmpty ? 'הפעולה לא הושלמה.' : c.message, error: !c.stoppedByUser),
-          const SizedBox(height: AppTokens.spaceLG),
-          Row(
-            children: [
-              FilledButton.icon(onPressed: c.start, icon: const Icon(Icons.refresh), label: const Text('נסו שוב')),
-              const SizedBox(width: AppTokens.spaceSM),
-              TextButton(onPressed: _close, child: const Text('סגור')),
-            ],
-          ),
-        ];
+        return Row(
+          children: [
+            Expanded(
+              child: _PrimaryButton(text: 'נסו שוב', onPressed: c.running ? null : c.start),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: _GhostButton(text: 'סגירה', onPressed: _close),
+            ),
+          ],
+        );
     }
   }
 }
 
-class _Result extends StatelessWidget {
-  const _Result({required this.text, required this.error});
-  final String text;
-  final bool error;
+const _title = TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: QuickColors.text);
+const _muted = TextStyle(fontSize: 13.5, color: QuickColors.muted, height: 1.4);
+const _faint = TextStyle(fontSize: 13, color: QuickColors.faint);
+
+class _TitleBar extends StatelessWidget {
+  const _TitleBar({required this.onClose});
+  final VoidCallback onClose;
 
   @override
   Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final dark = Theme.of(context).brightness == Brightness.dark;
-    final bg = error ? cs.errorContainer : (dark ? const Color(0xFF1B3A1F) : const Color(0xFFDCEFDD));
-    final fg = error ? cs.onErrorContainer : (dark ? const Color(0xFFA5D6A7) : const Color(0xFF1B5E20));
-    return Semantics(
-      liveRegion: true,
-      child: Container(
-        padding: const EdgeInsets.all(AppTokens.spaceMD),
-        decoration: BoxDecoration(color: bg, borderRadius: AppTokens.borderRadiusAll),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(error ? Icons.error_outline : Icons.check_circle, color: fg, size: 28),
-            const SizedBox(width: AppTokens.spaceMD),
-            Expanded(
-              child: SelectableText(
-                text,
-                style: TextStyle(color: fg, fontSize: AppTokens.fontLG),
+    final win = QuickWindow.instance;
+    return Container(
+      height: 32,
+      decoration: const BoxDecoration(
+        color: QuickColors.titleBar,
+        border: Border(bottom: BorderSide(color: QuickColors.titleBarBorder)),
+      ),
+      child: Row(
+        children: [
+          // אזור הגרירה: כל הפס חוץ מכפתורי החלון.
+          Expanded(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onPanStart: win == null ? null : (_) => win.startDrag(),
+              child: const Padding(
+                padding: EdgeInsetsDirectional.only(start: 12),
+                child: Align(
+                  alignment: AlignmentDirectional.centerStart,
+                  child: Text(
+                    'עדכון מסד הספרים',
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 12, color: QuickColors.muted),
+                  ),
+                ),
               ),
             ),
-          ],
+          ),
+          if (win != null) _CaptionButton(glyph: '', onTap: win.minimize),
+          _CaptionButton(glyph: '', onTap: onClose, danger: true),
+        ],
+      ),
+    );
+  }
+}
+
+class _CaptionButton extends StatefulWidget {
+  const _CaptionButton({required this.glyph, required this.onTap, this.danger = false});
+  final String glyph;
+  final VoidCallback onTap;
+  final bool danger;
+
+  @override
+  State<_CaptionButton> createState() => _CaptionButtonState();
+}
+
+class _CaptionButtonState extends State<_CaptionButton> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final bg = !_hover ? Colors.transparent : (widget.danger ? const Color(0xFFC42B1C) : QuickColors.captionHover);
+    final fg = _hover && widget.danger ? Colors.white : QuickColors.text;
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: Container(
+          width: 46,
+          height: 32,
+          color: bg,
+          alignment: Alignment.center,
+          child: Text(
+            widget.glyph,
+            style: TextStyle(
+              fontFamily: 'Segoe Fluent Icons',
+              fontFamilyFallback: const ['Segoe MDL2 Assets'],
+              fontSize: 10,
+              color: fg,
+            ),
+          ),
         ),
       ),
+    );
+  }
+}
+
+class _Hero extends StatelessWidget {
+  const _Hero();
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        // הרקע הלבן של האייקון נבלע בצבע הדף (multiply), כך שנשאר רק הספר המוזהב.
+        Image.asset(
+          'assets/icon.png',
+          width: 104,
+          height: 104,
+          color: QuickColors.page,
+          colorBlendMode: BlendMode.multiply,
+          errorBuilder: (_, _, _) => const SizedBox(height: 104),
+        ),
+        const SizedBox(height: 10),
+        const Text(
+          'עדכון מסד הספרים',
+          style: TextStyle(fontSize: 26, fontWeight: FontWeight.w600, color: QuickColors.text),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            _goldLine(),
+            const SizedBox(width: 6),
+            Transform.rotate(angle: 0.785398, child: Container(width: 6, height: 6, color: QuickColors.gold)),
+            const SizedBox(width: 6),
+            _goldLine(),
+          ],
+        ),
+        const SizedBox(height: 8),
+        const Text('מאגר הספרים הלא רשמי', style: TextStyle(fontSize: 15, color: QuickColors.muted)),
+      ],
+    );
+  }
+
+  static Widget _goldLine() => Container(
+    width: 56,
+    height: 1.2,
+    decoration: const BoxDecoration(
+      gradient: LinearGradient(colors: [Color(0x00B08A3E), QuickColors.gold, Color(0x00B08A3E)]),
+    ),
+  );
+}
+
+class _Lines extends StatelessWidget {
+  const _Lines({required this.title, required this.detail});
+  final String title;
+  final String detail;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(title, textAlign: TextAlign.center, style: _title),
+        if (detail.isNotEmpty) ...[const SizedBox(height: 4), Text(detail, textAlign: TextAlign.center, style: _faint)],
+      ],
+    );
+  }
+}
+
+class _Progress extends StatelessWidget {
+  const _Progress({required this.c});
+  final QuickUpdateController c;
+
+  @override
+  Widget build(BuildContext context) {
+    final a = c.db.activity;
+    final inspecting = a == null && c.db.inspecting;
+    final value = a?.progress ?? (inspecting ? c.db.inspectProgress : null);
+    final title = a?.title ?? (inspecting ? 'מזהה את גרסת המסד' : 'מתכונן');
+    final pct = value == null ? '' : '${(value * 100).round()}%';
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                title,
+                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: QuickColors.text),
+              ),
+            ),
+            Text(pct, style: const TextStyle(fontSize: 15, color: QuickColors.muted)),
+          ],
+        ),
+        const SizedBox(height: 10),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: LinearProgressIndicator(value: value, minHeight: 8, backgroundColor: QuickColors.track),
+        ),
+        const SizedBox(height: 8),
+        Text(a?.detail ?? '', maxLines: 1, overflow: TextOverflow.ellipsis, style: _faint),
+      ],
+    );
+  }
+}
+
+class _Badge extends StatelessWidget {
+  const _Badge({required this.ok, this.soft = false});
+  final bool ok;
+  final bool soft;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = ok || soft ? QuickColors.primary : QuickColors.error;
+    final icon = ok ? Icons.check_rounded : (soft ? Icons.pause_rounded : Icons.priority_high_rounded);
+    return Container(
+      width: 72,
+      height: 72,
+      padding: const EdgeInsets.all(6),
+      decoration: const BoxDecoration(color: Color(0xFFEFE8DF), shape: BoxShape.circle),
+      child: Container(
+        decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+        child: Icon(icon, color: Colors.white, size: 34),
+      ),
+    );
+  }
+}
+
+class _Note extends StatelessWidget {
+  const _Note({required this.text});
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(color: QuickColors.tile, borderRadius: BorderRadius.circular(8)),
+      child: SelectableText(
+        text,
+        textAlign: TextAlign.center,
+        style: const TextStyle(fontSize: 12.5, color: QuickColors.onTonal),
+      ),
+    );
+  }
+}
+
+class _Disclaimer extends StatelessWidget {
+  const _Disclaimer();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: QuickColors.card,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: QuickColors.divider),
+      ),
+      child: const Text(
+        'המסד אינו חלק מתוכנת אוצריא ואינו באחריותה.\nאין לפנות לאוצריא בנושאים הקשורים למסד זה.',
+        textAlign: TextAlign.center,
+        style: TextStyle(fontSize: 12, color: QuickColors.muted, height: 1.4),
+      ),
+    );
+  }
+}
+
+class _PrimaryButton extends StatelessWidget {
+  const _PrimaryButton({required this.text, required this.onPressed});
+  final String text;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      height: 44,
+      child: FilledButton(
+        onPressed: onPressed,
+        style: ButtonStyle(
+          backgroundColor: WidgetStateProperty.resolveWith(
+            (s) => s.contains(WidgetState.disabled)
+                ? QuickColors.disabled
+                : s.contains(WidgetState.hovered)
+                ? QuickColors.primaryHover
+                : QuickColors.primary,
+          ),
+          foregroundColor: WidgetStateProperty.resolveWith(
+            (s) => s.contains(WidgetState.disabled) ? QuickColors.disabledText : Colors.white,
+          ),
+          shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+          textStyle: const WidgetStatePropertyAll(TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
+        ),
+        child: Text(text),
+      ),
+    );
+  }
+}
+
+class _GhostButton extends StatelessWidget {
+  const _GhostButton({required this.text, required this.onPressed});
+  final String text;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      height: 44,
+      child: OutlinedButton(
+        onPressed: onPressed,
+        style: OutlinedButton.styleFrom(
+          foregroundColor: QuickColors.primary,
+          side: const BorderSide(color: QuickColors.divider),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+          textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+        ),
+        child: Text(text),
+      ),
+    );
+  }
+}
+
+class _Dialog extends StatelessWidget {
+  const _Dialog({required this.text, required this.okText, required this.cancelText});
+  final String text;
+  final String okText;
+  final String cancelText;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      content: Text(text, style: const TextStyle(fontSize: 14, color: QuickColors.text, height: 1.4)),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context, false), child: Text(cancelText)),
+        FilledButton(
+          style: FilledButton.styleFrom(backgroundColor: QuickColors.primary),
+          onPressed: () => Navigator.pop(context, true),
+          child: Text(okText),
+        ),
+      ],
     );
   }
 }

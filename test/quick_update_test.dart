@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -10,7 +9,6 @@ import 'package:books_offline_update/src/db/db_service.dart';
 import 'package:books_offline_update/src/quick/quick_update_controller.dart';
 import 'package:books_offline_update/src/quick/quick_update_screen.dart';
 import 'package:books_offline_update/src/services/app_paths.dart';
-import 'package:books_offline_update/src/theme/app_theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
@@ -209,134 +207,191 @@ void main() {
     });
     tearDown(() => c.dispose());
 
-    test('מחשב מחובר: מוריד לכונן את כל הסט ומסיים', () async {
+    String existing(String name) => (File(p.join(tmp.path, name))..createSync(recursive: true)).path;
+
+    test('מצורף לאוצריא אבל הקובץ נמחק: כמו התקנה ראשונה (בחירת מיקום)', () async {
+      db.fakeMirror = _release(_manifest(52));
+      db.attachedPath = p.join(tmp.path, 'deleted', '$dbLibraryId.db');
+      await c.start();
+      expect(c.phase, QuickPhase.ready);
+      expect(c.action, QuickAction.install);
+    });
+
+    test('התקנה ראשונה לתיקייה שכבר יש בה מסד עדכני: רק מצרפים, לא כשל', () async {
+      db.fakeMirror = _release(_manifest(52));
+      db.initialTarget = p.join(tmp.path, 'none', 'x.db');
+      await c.start();
+      db.installed = true; // המסד שבתיקייה שנבחרה כבר עדכני
+      final folder = p.join(tmp.path, 'has-db');
+      // ensureAttached רואה שהמסד כבר מצורף, ולכן לא נוגע באוצריא האמיתית.
+      db.otzariaDbPath = p.join(folder, '$dbLibraryId.db');
+      await c.installTo(folder);
+      expect(c.phase, QuickPhase.done);
+      expect(c.title, 'המסד מעודכן');
+    });
+
+    void fillDrive(DbManifest m, StepsManifest? steps) {
+      Directory(c.mirrorDir).createSync(recursive: true);
+      for (final a in QuickUpdateController.driveSet(m, steps)) {
+        for (final part in a.parts) {
+          File(p.join(c.mirrorDir, part.fileName)).writeAsBytesSync(List.filled(part.size, 0));
+        }
+      }
+    }
+
+    test('מחשב מחובר: בפתיחה בודק ומציג כפתור הורדה; ההורדה רק בלחיצה', () async {
       final m = _manifest(52, directFrom: [50, 51]);
       db.fakeRemote = _release(m);
       db.fakeSteps = StepsRelease(Uint8List(0), '', _steps(40, 52));
       await c.start();
       expect(c.online, isTrue);
+      expect(c.phase, QuickPhase.ready);
+      expect(c.action, QuickAction.download);
+      expect(c.title, contains('52'));
+      expect(c.detail, contains('להורדה'));
+      expect(db.downloaded, isNull);
+      await c.run();
       expect(c.phase, QuickPhase.done);
+      expect(c.title, 'הכונן מוכן');
       expect(
         db.downloaded!.map((a) => a.parts.first.fileName),
         QuickUpdateController.driveSet(m, db.fakeSteps!.manifest).map((a) => a.parts.first.fileName),
       );
-      expect(db.installed, isFalse);
     });
 
-    test('מחשב מחובר: הורדה שנכשלה מציגה כשל ואפשר לנסות שוב', () async {
+    test('מחשב מחובר: הכונן כבר מעודכן — אין כפתור הורדה', () async {
+      final m = _manifest(52);
+      final steps = _steps(48, 52);
+      db.fakeRemote = _release(m);
+      db.fakeSteps = StepsRelease(Uint8List(0), '', steps);
+      db.fakeMirror = _release(m);
+      fillDrive(m, steps);
+      await c.start();
+      expect(c.phase, QuickPhase.done);
+      expect(c.title, 'הכונן מעודכן');
+    });
+
+    test('מחשב מחובר: כל הקבצים בכונן אבל המניפסט ישן — מציעים הורדה', () async {
+      final m = _manifest(52);
+      db.fakeRemote = _release(m);
+      db.fakeMirror = _release(_manifest(51));
+      fillDrive(m, null);
+      await c.start();
+      expect(c.phase, QuickPhase.ready);
+      expect(c.detail, isEmpty);
+    });
+
+    test('מחשב מחובר: הורדה שנכשלה, ואז "נסו שוב" בודק מחדש', () async {
       db.fakeRemote = _release(_manifest(52));
       db.downloadOk = false;
       await c.start();
+      await c.run();
       expect(c.phase, QuickPhase.failed);
       db.downloadOk = true;
       await c.start();
+      expect(c.phase, QuickPhase.ready);
+      await c.run();
       expect(c.phase, QuickPhase.done);
     });
 
-    test('בלי רשת ובלי קבצים בכונן: הסבר', () async {
+    test('בלי רשת ובלי קבצים בכונן: הסבר, כולל שגיאת הרשת', () async {
+      db.fakeRemoteError = 'חסום';
       await c.start();
       expect(c.online, isFalse);
       expect(c.phase, QuickPhase.failed);
       expect(c.message, contains('במחשב מחובר'));
+      expect(c.message, contains('חסום'));
     });
 
-    test('בלי רשת, פעם ראשונה: שואלים על מיקום, ואז מתקינים שם', () async {
+    test('בלי רשת, פעם ראשונה: כפתור בחירת מיקום, וההתקנה רק אחרי הבחירה', () async {
       db.fakeMirror = _release(_manifest(52));
       db.initialTarget = p.join(tmp.path, 'none', 'x.db');
       await c.start();
-      expect(c.phase, QuickPhase.needsLocation);
+      expect(c.phase, QuickPhase.ready);
+      expect(c.action, QuickAction.install);
+      await c.run(); // בהתקנה ראשונה הכפתור הוא בחירת מיקום, לא run
       expect(db.installed, isFalse);
       final folder = p.join(tmp.path, 'chosen');
-      await c.chooseFolder(folder);
+      await c.installTo(folder);
       expect(db.targetDb, p.join(folder, '$dbLibraryId.db'));
       expect(db.installed, isTrue);
       expect(c.phase, QuickPhase.done);
+      expect(c.title, 'המסד עודכן');
     });
 
-    test('בלי רשת, המסד כבר מצורף לאוצריא: מתקינים בלי לשאול', () async {
+    test('בלי רשת, מסד מצורף לאוצריא: כפתור עדכון, והעדכון רק בלחיצה', () async {
       db.fakeMirror = _release(_manifest(52));
-      final attached = p.join(tmp.path, 'otz', '$dbLibraryId.db');
+      final attached = existing(p.join('otz', '$dbLibraryId.db'));
       db.attachedPath = attached;
       await c.start();
       expect(db.targetDb, attached);
+      expect(c.phase, QuickPhase.ready);
+      expect(c.action, QuickAction.update);
+      expect(db.installed, isFalse);
+      await c.run();
       expect(db.installed, isTrue);
       expect(c.phase, QuickPhase.done);
     });
 
-    test('בלי רשת, מסד קיים שנבחר בעבר: מתקינים בלי לשאול', () async {
+    test('בלי רשת, המסד כבר מעודכן: אין כפתור', () async {
       db.fakeMirror = _release(_manifest(52));
-      final existing = File(p.join(tmp.path, 'mine.db'))..writeAsStringSync('');
-      db.initialTarget = existing.path;
+      db.attachedPath = existing('otz.db');
+      db.installed = true;
       await c.start();
-      expect(db.installed, isTrue);
       expect(c.phase, QuickPhase.done);
+      expect(c.title, 'המסד מעודכן');
+      expect(c.warning, isNull);
     });
 
-    test('סגירה אוטומטית: רק כשאין מה לעשות (מחובר, או מסד מצורף לאוצריא)', () async {
+    test('בחירת תיקייה: לחיצה כפולה נבלעת', () async {
       db.fakeMirror = _release(_manifest(52));
       db.initialTarget = p.join(tmp.path, 'none', 'x.db');
       await c.start();
-      await c.chooseFolder(p.join(tmp.path, 'chosen'));
-      expect(c.phase, QuickPhase.done);
-      expect(c.canAutoClose, isFalse, reason: 'המסד הותקן אבל לא צורף לאוצריא');
-
-      final db2 = _FakeDb()
-        ..fakeMirror = _release(_manifest(52))
-        ..attachedPath = p.join(tmp.path, 'otz.db');
-      final c2 = QuickUpdateController(mirrorDir: tmp.path, db: db2);
-      await c2.start();
-      expect(c2.canAutoClose, isTrue);
-      c2.dispose();
-    });
-
-    test('בחירת תיקייה: עוברים מיד לשלב העבודה, ולחיצה כפולה נבלעת', () async {
-      db.fakeMirror = _release(_manifest(52));
-      db.initialTarget = p.join(tmp.path, 'none', 'x.db');
-      await c.start();
-      final first = c.chooseFolder(p.join(tmp.path, 'a'));
+      final first = c.installTo(p.join(tmp.path, 'a'));
       expect(c.phase, QuickPhase.working);
       expect(c.running, isTrue);
-      await c.chooseFolder(p.join(tmp.path, 'b'));
+      await c.installTo(p.join(tmp.path, 'b'));
       await first;
       expect(db.targetDb, p.join(tmp.path, 'a', '$dbLibraryId.db'));
     });
 
-    test('ההתקנה לא התחילה (בלי הודעה): הודעה ברורה ולא ריקה', () async {
+    test('העדכון לא התחיל (בלי הודעה): הודעה ברורה', () async {
       db.fakeMirror = _release(_manifest(52));
-      db.attachedPath = p.join(tmp.path, 'otz.db');
+      db.attachedPath = existing('otz.db');
       db.installNoop = true;
       await c.start();
+      await c.run();
       expect(c.phase, QuickPhase.failed);
-      expect(c.message, contains('לא התחילה'));
+      expect(c.message, contains('לא התחיל'));
     });
 
-    test('עצירה בידי המשתמש: כשל רך, לא שגיאה; וניסיון חוזר מצליח', () async {
+    test('עצירה בידי המשתמש: כשל רך; "נסו שוב" ואז עדכון מצליח', () async {
       db.fakeMirror = _release(_manifest(52));
-      db.attachedPath = p.join(tmp.path, 'otz.db');
+      db.attachedPath = existing('otz.db');
       db.installStopMessage = 'הפעולה נעצרה. המסד הקיים לא שונה.';
       await c.start();
+      await c.run();
       expect(c.phase, QuickPhase.failed);
       expect(c.stoppedByUser, isTrue);
       db.installStopMessage = null;
       await c.start();
+      expect(c.phase, QuickPhase.ready);
+      await c.run();
       expect(c.phase, QuickPhase.done);
     });
 
-    test('בלי קבצים בכונן ויש שגיאת רשת: מוצגת גם שגיאת הרשת', () async {
-      db.fakeRemoteError = 'חסום';
-      await c.start();
-      expect(c.message, contains('חסום'));
-    });
-
-    test('אחרי dispose תהליך שרץ לא זורק ולא מודיע', () async {
+    test('אחרי dispose תהליך שרץ לא זורק', () async {
       db.fakeMirror = _release(_manifest(52));
-      db.attachedPath = p.join(tmp.path, 'otz.db');
+      db.attachedPath = existing('otz.db');
       final run = c.start();
       c.dispose();
       await run;
       expect(c.phase, isNot(QuickPhase.done));
-      // tearDown קורא שוב ל-dispose: מחליפים בבקר חדש.
       c = QuickUpdateController(mirrorDir: tmp.path, db: _FakeDb());
+    });
+
+    test('הבקר לא מזהה את המסד המקומי מעצמו (חוסך חישוב SHA במחשב המחובר)', () {
+      expect(db.autoInspect, isFalse);
     });
   });
 
@@ -370,70 +425,87 @@ void main() {
 
   group('המסך', () {
     Widget host(Widget child) => MaterialApp(
-      theme: AppTheme.light(),
+      theme: quickTheme(),
       builder: (context, ch) => Directionality(textDirection: TextDirection.rtl, child: ch!),
       home: child,
     );
 
-    testWidgets('פעם ראשונה: מוצג המיקום המוצע ושני כפתורים', (t) async {
+    Future<void> settle(WidgetTester t, QuickUpdateController c, Future<void> Function() action) async {
+      await t.runAsync(action);
+      await t.pump();
+    }
+
+    ButtonStyleButton buttonWith(WidgetTester t, String text) =>
+        t.widget<ButtonStyleButton>(find.ancestor(of: find.text(text), matching: find.bySubtype<ButtonStyleButton>()));
+
+    testWidgets('פעם ראשונה: כפתור "בחירת מיקום" פעיל, ובחירה מתקינה', (t) async {
+      await t.binding.setSurfaceSize(const Size(quickWindowWidth, quickWindowHeight));
       final db = _FakeDb()
         ..fakeMirror = _release(_manifest(52))
         ..initialTarget = p.join(tmp.path, 'none', 'x.db');
-      final c = QuickUpdateController(mirrorDir: tmp.path, db: db);
-      // המסך קיים לפני שהתהליך רץ: הכפתורים חייבים להיות פעילים בסיומו (באג: נשארו מושבתים).
-      await t.pumpWidget(host(QuickUpdateScreen(controller: c, autoStart: false, onClose: () {})));
-      await t.runAsync(c.start);
-      await t.pump();
-      expect(find.text(c.proposedFolder), findsOneWidget);
-      final ok = t.widget<ButtonStyleButton>(
-        find.ancestor(of: find.text('התקנה בתיקייה הזו'), matching: find.bySubtype<ButtonStyleButton>()),
-      );
-      final other = t.widget<ButtonStyleButton>(
-        find.ancestor(of: find.text('בחירת תיקייה אחרת'), matching: find.bySubtype<ButtonStyleButton>()),
-      );
-      expect(ok.onPressed, isNotNull);
-      expect(other.onPressed, isNotNull);
-      expect(find.text('פתיחת התוכנה המלאה'), findsNothing, reason: 'לא הועבר onOpenFull');
-    });
-
-    testWidgets('אחרי סיום: הכפתור לתוכנה המלאה מוצג', (t) async {
-      final db = _FakeDb();
-      final c = QuickUpdateController(mirrorDir: tmp.path, db: db);
-      await t.pumpWidget(host(QuickUpdateScreen(controller: c, autoStart: false, onClose: () {}, onOpenFull: () {})));
-      await t.runAsync(c.start);
-      await t.pump();
-      expect(c.phase, QuickPhase.failed);
-      expect(find.text('פתיחת התוכנה המלאה'), findsOneWidget);
-    });
-
-    testWidgets('הצלחה: נסגר לבד אחרי הספירה', (t) async {
-      final db = _FakeDb()..fakeRemote = _release(_manifest(52));
-      final c = QuickUpdateController(mirrorDir: tmp.path, db: db);
-      var closed = false;
+      final c = QuickUpdateController(mirrorDir: tmp.path, db: db, findOtzariaDb: () async => null);
+      String? askedAt;
       await t.pumpWidget(
         host(
           QuickUpdateScreen(
             controller: c,
             autoStart: false,
-            autoCloseAfter: const Duration(seconds: 3),
-            onClose: () => closed = true,
+            onClose: () {},
+            pickFolder: (dir) async {
+              askedAt = dir;
+              return p.join(tmp.path, 'chosen');
+            },
           ),
         ),
       );
-      // זהו קובץ שכבר "בכונן": אין צורך בבדיקת מקום פנוי (שעלולה לא להסתיים בזמן המדומה).
-      final f = db.fakeRemote!.manifest.full.parts.first;
-      File(p.join(tmp.path, f.fileName)).writeAsBytesSync(List.filled(f.size, 0));
-      // start רץ באזור הזמן המדומה (שם נוצר טיימר הסגירה); פעולות הקבצים האמיתיות מסתיימות בהמתנה אמיתית.
-      unawaited(c.start());
-      for (var i = 0; i < 100 && c.phase != QuickPhase.done; i++) {
-        await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+      await settle(t, c, c.start);
+      expect(find.text('המסד לא מותקן במחשב הזה'), findsOneWidget);
+      expect(buttonWith(t, 'בחירת מיקום').onPressed, isNotNull);
+      await t.tap(find.text('בחירת מיקום'));
+      for (var i = 0; i < 20 && c.phase != QuickPhase.done; i++) {
+        await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 5)));
         await t.pump();
       }
-      expect(c.phase, QuickPhase.done);
-      expect(find.text('סגור'), findsOneWidget);
-      expect(find.textContaining('חברו את הכונן'), findsOneWidget);
-      await t.pump(const Duration(seconds: 4));
+      expect(askedAt, c.proposedFolder);
+      expect(db.installed, isTrue);
+      expect(find.text('המסד עודכן'), findsOneWidget);
+      expect(find.text('סגירה'), findsOneWidget);
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('מחשב מחובר: כפתור "הורדה" אחד, ובסיום "הכונן מוכן"', (t) async {
+      await t.binding.setSurfaceSize(const Size(quickWindowWidth, quickWindowHeight));
+      final db = _FakeDb()..fakeRemote = _release(_manifest(52));
+      final c = QuickUpdateController(mirrorDir: tmp.path, db: db);
+      var closed = false;
+      await t.pumpWidget(host(QuickUpdateScreen(controller: c, autoStart: false, onClose: () => closed = true)));
+      await settle(t, c, c.start);
+      expect(find.text('גרסה 52 זמינה'), findsOneWidget);
+      expect(find.bySubtype<ButtonStyleButton>(), findsOneWidget);
+      expect(buttonWith(t, 'הורדה').onPressed, isNotNull);
+      await t.tap(find.text('הורדה'));
+      for (var i = 0; i < 20 && c.phase != QuickPhase.done; i++) {
+        await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 5)));
+        await t.pump();
+      }
+      expect(find.text('הכונן מוכן'), findsOneWidget);
+      await t.tap(find.text('סגירה'));
+      await t.pump();
       expect(closed, isTrue);
+      expect(t.takeException(), isNull);
+    });
+
+    testWidgets('ההבהרה שהמסד אינו חלק מאוצריא מוצגת תמיד', (t) async {
+      await t.binding.setSurfaceSize(const Size(quickWindowWidth, quickWindowHeight));
+      final c = QuickUpdateController(mirrorDir: tmp.path, db: _FakeDb());
+      await t.pumpWidget(host(QuickUpdateScreen(controller: c, autoStart: false, onClose: () {})));
+      expect(find.textContaining('המסד אינו חלק מתוכנת אוצריא'), findsOneWidget);
+      expect(find.textContaining('אין לפנות לאוצריא'), findsOneWidget);
+      await settle(t, c, c.start);
+      expect(c.phase, QuickPhase.failed);
+      expect(find.textContaining('המסד אינו חלק מתוכנת אוצריא'), findsOneWidget);
+      expect(find.text('נסו שוב'), findsOneWidget);
+      expect(t.takeException(), isNull);
     });
   });
 }

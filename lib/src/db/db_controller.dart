@@ -124,6 +124,9 @@ class DbController extends ChangeNotifier {
 
   bool get busy => activity != null;
 
+  /// `false`: לא מזהים את המסד המקומי מעצמנו (חישוב SHA של המסד); הקורא מזהה כשצריך (עדכון מהיר).
+  bool autoInspect = true;
+
   // ─── אתחול והגדרות ────────────────────────────────────────────────
 
   /// פר-מחשב: מיקום המסד זכור כאן, ולא נוסע עם התוכנה בדיסק און קי.
@@ -167,7 +170,7 @@ class DbController extends ChangeNotifier {
     }
     if (targetDb.isNotEmpty) await DbService.recoverInterrupted(targetDb);
     await refreshMirror();
-    if (targetDb.isNotEmpty) await inspectTarget();
+    if (autoInspect && targetDb.isNotEmpty) await inspectTarget();
     notifyListeners();
     await checkRemote();
   }
@@ -261,7 +264,7 @@ class DbController extends ChangeNotifier {
     }
     checking = false;
     notifyListeners();
-    if (remote != null && targetDb.isNotEmpty && !busy) await inspectTarget();
+    if (autoInspect && remote != null && targetDb.isNotEmpty && !busy) await inspectTarget();
   }
 
   // ─── מראה ─────────────────────────────────────────────────────────
@@ -627,7 +630,7 @@ class DbController extends ChangeNotifier {
     }
     activity = null;
     await refreshMirror();
-    if (targetDb.isNotEmpty) await inspectTarget();
+    if (autoInspect && targetDb.isNotEmpty) await inspectTarget();
     return ok;
   }
 
