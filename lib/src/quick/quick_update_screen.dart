@@ -5,7 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 
 import '../db/db_controller.dart' show DbController;
-import '../services/otzaria_locator.dart';
+import 'quick_log.dart';
 import 'quick_update_controller.dart';
 import 'quick_window.dart';
 
@@ -130,22 +130,29 @@ class _QuickUpdateScreenState extends State<QuickUpdateScreen> {
     return ok == true;
   }
 
-  Future<void> _chooseLocation() async {
-    final initial = c.proposedFolder;
-    // התיקייה של אוצריא למסדים אישיים: נוצרת כדי שחלון הבחירה ייפתח בה.
-    if (widget.pickFolder == null && OtzariaLocator.dataRoot() != null) {
-      try {
-        Directory(initial).createSync(recursive: true);
-      } catch (_) {}
-    }
+  /// "שינוי": רק מחליף את המיקום שנבחר. ההתקנה עצמה בכפתור "התקנה".
+  Future<void> _changeLocation() async {
+    final initial = c.installFolder;
     final pick =
         widget.pickFolder ??
         (String dir) => FilePicker.getDirectoryPath(
           dialogTitle: 'בחירת מיקום למסד הספרים',
-          initialDirectory: Directory(dir).existsSync() ? dir : null,
+          initialDirectory: _nearestExisting(dir),
         );
     final folder = await pick(initial);
-    if (folder != null) await c.installTo(folder);
+    if (folder != null) c.changeFolder(folder);
+  }
+
+  /// התיקייה הקרובה ביותר שקיימת (המוצעת אולי עוד לא נוצרה), כדי שחלון הבחירה ייפתח לידה.
+  static String? _nearestExisting(String dir) {
+    var d = dir;
+    for (var i = 0; i < 4; i++) {
+      if (Directory(d).existsSync()) return d;
+      final parent = Directory(d).parent.path;
+      if (parent == d) break;
+      d = parent;
+    }
+    return null;
   }
 
   @override
@@ -188,7 +195,15 @@ class _QuickUpdateScreenState extends State<QuickUpdateScreen> {
           ],
         );
       case QuickPhase.ready:
-        return _Lines(title: c.title, detail: c.detail);
+        if (c.action != QuickAction.install) return _Lines(title: c.title, detail: c.detail);
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _Lines(title: c.title, detail: c.detail),
+            const SizedBox(height: 16),
+            _Location(path: c.installFolder, onChange: c.running ? null : _changeLocation),
+          ],
+        );
       case QuickPhase.working:
         return _Progress(c: c);
       case QuickPhase.done:
@@ -220,8 +235,25 @@ class _QuickUpdateScreenState extends State<QuickUpdateScreen> {
                 ),
               ),
             ),
+            if (QuickLog.path != null)
+              TextButton(
+                onPressed: _openLog,
+                style: TextButton.styleFrom(foregroundColor: QuickColors.faint),
+                child: const Text('פתיחת קובץ הלוג', style: TextStyle(fontSize: 12.5)),
+              ),
           ],
         );
+    }
+  }
+
+  /// מציג את קובץ הלוג בסייר הקבצים (כדי לצרף אותו לדיווח על תקלה).
+  void _openLog() {
+    final path = QuickLog.path;
+    if (path == null) return;
+    try {
+      Process.run('explorer.exe', ['/select,', path]);
+    } catch (e) {
+      QuickLog.warn('פתיחת הלוג נכשלה: $e');
     }
   }
 
@@ -233,7 +265,7 @@ class _QuickUpdateScreenState extends State<QuickUpdateScreen> {
         return switch (c.action) {
           QuickAction.download => _PrimaryButton(text: 'הורדה', onPressed: c.running ? null : c.run),
           QuickAction.update => _PrimaryButton(text: 'עדכון', onPressed: c.running ? null : c.run),
-          QuickAction.install => _PrimaryButton(text: 'בחירת מיקום', onPressed: c.running ? null : _chooseLocation),
+          QuickAction.install => _PrimaryButton(text: 'התקנה', onPressed: c.running ? null : c.run),
           null => const SizedBox.shrink(),
         };
       case QuickPhase.working:
@@ -243,6 +275,21 @@ class _QuickUpdateScreenState extends State<QuickUpdateScreen> {
           onPressed: a == null || a.cancelled ? null : c.db.cancel,
         );
       case QuickPhase.done:
+        if (c.canUpdateThisComputer) {
+          return Row(
+            children: [
+              Expanded(
+                flex: 3,
+                child: _PrimaryButton(text: 'עדכון במחשב זה', onPressed: c.running ? null : c.updateThisComputer),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                flex: 2,
+                child: _GhostButton(text: 'סגירה', onPressed: _close),
+              ),
+            ],
+          );
+        }
         return _PrimaryButton(text: 'סגירה', onPressed: _close);
       case QuickPhase.failed:
         return Row(
@@ -466,6 +513,49 @@ class _Badge extends StatelessWidget {
       child: Container(
         decoration: BoxDecoration(color: color, shape: BoxShape.circle),
         child: Icon(icon, color: Colors.white, size: 34),
+      ),
+    );
+  }
+}
+
+/// מיקום ההתקנה שכבר נבחר (ברירת המחדל), עם כפתור קטן לשינוי.
+class _Location extends StatelessWidget {
+  const _Location({required this.path, required this.onChange});
+  final String path;
+  final VoidCallback? onChange;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsetsDirectional.only(start: 12, end: 4, top: 4, bottom: 4),
+      decoration: BoxDecoration(
+        color: QuickColors.card,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: QuickColors.divider),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.folder_outlined, size: 18, color: QuickColors.faint),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Tooltip(
+              message: path,
+              child: Text(
+                path,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textDirection: TextDirection.ltr,
+                textAlign: TextAlign.right,
+                style: const TextStyle(fontSize: 12, color: QuickColors.muted),
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: onChange,
+            style: TextButton.styleFrom(foregroundColor: QuickColors.primary),
+            child: const Text('שינוי', style: TextStyle(fontWeight: FontWeight.w600)),
+          ),
+        ],
       ),
     );
   }

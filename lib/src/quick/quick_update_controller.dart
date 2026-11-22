@@ -9,6 +9,7 @@ import '../db/db_manifest.dart';
 import '../db/db_service.dart';
 import '../services/disk_space.dart';
 import '../services/otzaria_locator.dart';
+import 'quick_log.dart';
 
 /// checking: בדיקה אוטומטית בפתיחה. ready: מחכים ללחיצה על הכפתור ([action]). working: הורדה/עדכון.
 enum QuickPhase { checking, ready, working, done, failed }
@@ -65,6 +66,22 @@ class QuickUpdateController extends ChangeNotifier {
   /// התיקייה שמוצעת בהתקנה ראשונה: "מסדים אישיים" של אוצריא (או במסמכים, כשאוצריא לא נמצאה).
   String get proposedFolder => p.dirname(OtzariaLocator.defaultNewDbPath());
 
+  String? _chosenFolder;
+
+  /// לאן תותקן המסד בהתקנה ראשונה: ברירת המחדל כבר "נבחרה"; [changeFolder] רק אם המשתמש משנה.
+  String get installFolder => _chosenFolder ?? proposedFolder;
+
+  void changeFolder(String folder) {
+    _chosenFolder = folder;
+    QuickLog.info('מיקום התקנה שונה ל: $folder');
+    notifyListeners();
+  }
+
+  /// מחשב מחובר אחרי שהכונן מוכן: מעדכנים מאותו כונן גם את המסד שבמחשב הזה.
+  bool localMode = false;
+
+  bool get canUpdateThisComputer => phase == QuickPhase.done && online == true && !localMode;
+
   String get message => note ?? db.message ?? '';
 
   /// כשל "רך": המשתמש עצר, או ביטל אישור. מוצג בלי צבע שגיאה.
@@ -81,6 +98,7 @@ class QuickUpdateController extends ChangeNotifier {
     note = null;
     warning = null;
     action = null;
+    localMode = false;
     db.clearMessage();
     phase = QuickPhase.checking;
     notifyListeners();
@@ -98,12 +116,20 @@ class QuickUpdateController extends ChangeNotifier {
       }
       if (_disposed) return;
       online = db.remote != null;
+      QuickLog.info(
+        'בדיקה: ${online! ? "מחובר" : "בלי רשת"}'
+        '${db.remoteError == null ? "" : " (שגיאת רשת: ${db.remoteError})"}'
+        ', גרסה ברשת: ${db.remote?.manifest.version}, בכונן: ${db.mirror?.manifest.version}'
+        '${db.mirrorError == null ? "" : " (שגיאת כונן: ${db.mirrorError})"}'
+        ', תיקיית הכונן: $mirrorDir, מצורף לאוצריא: ${db.otzariaDbPath}, יעד: ${db.targetDb}',
+      );
       if (online!) {
         _checkDrive();
       } else {
         await _checkLocal();
       }
-    } catch (e) {
+    } catch (e, st) {
+      QuickLog.error('שגיאה לא צפויה', e, st);
       _fail('שגיאה לא צפויה: $e');
     } finally {
       _running = false;
@@ -115,6 +141,7 @@ class QuickUpdateController extends ChangeNotifier {
     final m = db.remote!.manifest;
     _driveList = driveSet(m, db.remoteSteps?.manifest);
     final missing = missingBytes(_driveList, mirrorDir);
+    QuickLog.info('כונן: ${_driveList.length} קבצים ברשימה, חסרים $missing בתים');
     if (missing == 0 && db.mirror?.manifest.version == m.version) {
       _done('הכונן מעודכן', 'גרסה ${m.version}');
       return;
@@ -122,7 +149,8 @@ class QuickUpdateController extends ChangeNotifier {
     _ready(QuickAction.download, 'גרסה ${m.version} זמינה', missing == 0 ? '' : '${_size(missing)} להורדה');
   }
 
-  Future<void> _checkLocal() async {
+  /// [runUpdate]: המשתמש כבר לחץ ("עדכון במחשב זה"), ולכן כשיש עדכון מחילים אותו מיד במקום להציג כפתור.
+  Future<void> _checkLocal({bool runUpdate = false}) async {
     if (db.mirror == null) {
       final net = db.remoteError == null ? '' : '\n\nאם המחשב מחובר לרשת: ${db.remoteError}';
       _fail(
@@ -151,6 +179,10 @@ class QuickUpdateController extends ChangeNotifier {
     await db.inspectTarget();
     if (_disposed) return;
     final plan = db.plan;
+    QuickLog.info(
+      'מסד מקומי: ${db.targetDb}, גרסה: ${db.localMirror?.version ?? "לא מזוהה"}, '
+      'תוכנית: ${plan?.action.name} — ${plan?.message}',
+    );
     if (plan == null) {
       _fail(db.message ?? 'לא ניתן לזהות את המסד במחשב הזה.');
       return;
@@ -164,14 +196,27 @@ class QuickUpdateController extends ChangeNotifier {
         _fail('${plan.message}\nהפעילו את התוכנה במחשב מחובר כדי להשלים את הקבצים בכונן.');
       case InstallAction.delta:
       case InstallAction.full:
+        if (runUpdate) {
+          await _install();
+          return;
+        }
         final from = db.localMirror?.version;
         _ready(QuickAction.update, 'גרסה $v זמינה', from == null ? '' : 'במחשב: גרסה $from');
     }
   }
 
+  /// "עדכון במחשב זה": אחרי שהכונן הוכן במחשב המחובר, מעדכנים ממנו גם את המסד המקומי
+  /// (או, כשהמסד לא מותקן כאן, עוברים להתקנה ראשונה).
+  Future<void> updateThisComputer() async {
+    if (!canUpdateThisComputer || _running || _disposed) return;
+    localMode = true;
+    QuickLog.info('עדכון במחשב זה');
+    await _guard(() => _checkLocal(runUpdate: true));
+  }
+
   // ─── פעולה ────────────────────────────────────────────────────────
 
-  /// הכפתור הראשי: הורדה לכונן או עדכון המסד. להתקנה ראשונה: [installTo].
+  /// הכפתור הראשי: הורדה לכונן, עדכון המסד, או התקנה ראשונה ב-[installFolder].
   Future<void> run() async {
     if (phase != QuickPhase.ready || _running || _disposed) return;
     switch (action) {
@@ -180,6 +225,7 @@ class QuickUpdateController extends ChangeNotifier {
       case QuickAction.update:
         await _guard(_install);
       case QuickAction.install:
+        await installTo(installFolder);
       case null:
         return;
     }
@@ -207,7 +253,8 @@ class QuickUpdateController extends ChangeNotifier {
     notifyListeners();
     try {
       await body();
-    } catch (e) {
+    } catch (e, st) {
+      QuickLog.error('שגיאה לא צפויה', e, st);
       _fail('שגיאה לא צפויה: $e');
     } finally {
       _running = false;
@@ -228,7 +275,9 @@ class QuickUpdateController extends ChangeNotifier {
         return;
       }
     }
+    QuickLog.info('הורדה לכונן: מתחיל (${_size(missing)} חסרים)');
     final ok = await db.downloadArtifacts(_driveList, title: 'מוריד', doneMessage: '');
+    QuickLog.info('הורדה לכונן: ${ok ? "הושלמה" : "לא הושלמה: ${db.message}"}');
     if (_disposed) return;
     if (!ok) {
       _fail(null);
@@ -252,7 +301,9 @@ class QuickUpdateController extends ChangeNotifier {
       _fail(plan?.message ?? db.message ?? 'לא ניתן לזהות את המסד במחשב הזה.');
       return;
     }
+    QuickLog.info('התקנה: ${plan.action.name} (${plan.all.length} קבצים) אל ${db.targetDb} — ${plan.message}');
     await db.install();
+    QuickLog.info('התקנה הסתיימה: ${db.messageIsError ? "שגיאה" : "ללא שגיאה"} — ${db.message}');
     if (_disposed) return;
     if (db.messageIsError || db.activity != null) {
       _fail(null);
@@ -348,6 +399,7 @@ class QuickUpdateController extends ChangeNotifier {
     title = t;
     detail = d;
     phase = QuickPhase.ready;
+    QuickLog.info('מוכן: ${a.name} — $t${d.isEmpty ? '' : ' ($d)'}');
     notifyListeners();
   }
 
@@ -357,6 +409,7 @@ class QuickUpdateController extends ChangeNotifier {
     detail = d;
     this.warning = warning;
     phase = QuickPhase.done;
+    QuickLog.info('הסתיים: $t ($d)${warning == null ? '' : ' | אזהרה: $warning'}');
     notifyListeners();
   }
 
@@ -364,6 +417,11 @@ class QuickUpdateController extends ChangeNotifier {
     if (_disposed) return;
     if (text != null) note = text;
     phase = QuickPhase.failed;
+    if (stoppedByUser) {
+      QuickLog.warn('נעצר: $message');
+    } else {
+      QuickLog.error('נכשל: $message');
+    }
     notifyListeners();
   }
 

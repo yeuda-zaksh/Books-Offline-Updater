@@ -303,20 +303,64 @@ void main() {
       expect(c.message, contains('חסום'));
     });
 
-    test('בלי רשת, פעם ראשונה: כפתור בחירת מיקום, וההתקנה רק אחרי הבחירה', () async {
+    test('בלי רשת, פעם ראשונה: ברירת המחדל כבר נבחרה, ו"התקנה" מתקין שם בלי לשאול', () async {
       db.fakeMirror = _release(_manifest(52));
       db.initialTarget = p.join(tmp.path, 'none', 'x.db');
       await c.start();
       expect(c.phase, QuickPhase.ready);
       expect(c.action, QuickAction.install);
-      await c.run(); // בהתקנה ראשונה הכפתור הוא בחירת מיקום, לא run
+      expect(c.installFolder, c.proposedFolder);
       expect(db.installed, isFalse);
-      final folder = p.join(tmp.path, 'chosen');
-      await c.installTo(folder);
-      expect(db.targetDb, p.join(folder, '$dbLibraryId.db'));
+      await c.run();
+      expect(db.targetDb, p.join(c.proposedFolder, '$dbLibraryId.db'));
       expect(db.installed, isTrue);
       expect(c.phase, QuickPhase.done);
       expect(c.title, 'המסד עודכן');
+    });
+
+    test('בלי רשת, פעם ראשונה: "שינוי" מחליף את המיקום, ו"התקנה" מתקין במיקום החדש', () async {
+      db.fakeMirror = _release(_manifest(52));
+      db.initialTarget = p.join(tmp.path, 'none', 'x.db');
+      await c.start();
+      final folder = p.join(tmp.path, 'chosen');
+      c.changeFolder(folder);
+      expect(c.installFolder, folder);
+      expect(db.installed, isFalse, reason: 'שינוי המיקום לבדו לא מתקין');
+      await c.run();
+      expect(db.targetDb, p.join(folder, '$dbLibraryId.db'));
+      expect(db.installed, isTrue);
+    });
+
+    test('מחשב מחובר: אחרי ההורדה "עדכון במחשב זה" מעדכן את המסד המקומי מהכונן', () async {
+      final m = _manifest(52);
+      db.fakeRemote = _release(m);
+      db.fakeMirror = _release(m);
+      db.attachedPath = existing('local.db');
+      await c.start();
+      await c.run();
+      expect(c.title, 'הכונן מוכן');
+      expect(c.canUpdateThisComputer, isTrue);
+      await c.updateThisComputer();
+      expect(db.installed, isTrue);
+      expect(c.phase, QuickPhase.done);
+      expect(c.title, 'המסד עודכן');
+      expect(c.canUpdateThisComputer, isFalse, reason: 'לא מציעים שוב אחרי העדכון המקומי');
+    });
+
+    test('מחשב מחובר: "עדכון במחשב זה" כשהמסד לא מותקן כאן — מסך התקנה עם ברירת מחדל', () async {
+      final m = _manifest(52);
+      db.fakeRemote = _release(m);
+      db.fakeMirror = _release(m);
+      db.initialTarget = p.join(tmp.path, 'none', 'x.db');
+      await c.start();
+      await c.run();
+      await c.updateThisComputer();
+      expect(c.phase, QuickPhase.ready);
+      expect(c.action, QuickAction.install);
+      expect(db.installed, isFalse);
+      await c.run();
+      expect(db.installed, isTrue);
+      expect(c.phase, QuickPhase.done);
     });
 
     test('בלי רשת, מסד מצורף לאוצריא: כפתור עדכון, והעדכון רק בלחיצה', () async {
@@ -438,7 +482,7 @@ void main() {
     ButtonStyleButton buttonWith(WidgetTester t, String text) =>
         t.widget<ButtonStyleButton>(find.ancestor(of: find.text(text), matching: find.bySubtype<ButtonStyleButton>()));
 
-    testWidgets('פעם ראשונה: כפתור "בחירת מיקום" פעיל, ובחירה מתקינה', (t) async {
+    testWidgets('פעם ראשונה: ברירת המחדל מוצגת, "שינוי" מחליף אותה בלי להתקין, "התקנה" מתקין', (t) async {
       await t.binding.setSurfaceSize(const Size(quickWindowWidth, quickWindowHeight));
       final db = _FakeDb()
         ..fakeMirror = _release(_manifest(52))
@@ -460,13 +504,23 @@ void main() {
       );
       await settle(t, c, c.start);
       expect(find.text('המסד לא מותקן במחשב הזה'), findsOneWidget);
-      expect(buttonWith(t, 'בחירת מיקום').onPressed, isNotNull);
-      await t.tap(find.text('בחירת מיקום'));
+      expect(find.text(c.proposedFolder), findsOneWidget);
+      expect(buttonWith(t, 'התקנה').onPressed, isNotNull);
+
+      await t.tap(find.text('שינוי'));
+      await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+      await t.pump();
+      expect(askedAt, c.proposedFolder);
+      expect(db.installed, isFalse);
+      expect(find.text(p.join(tmp.path, 'chosen')), findsOneWidget);
+
+      await t.tap(find.text('התקנה'));
       for (var i = 0; i < 400 && c.phase != QuickPhase.done; i++) {
         await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
         await t.pump();
       }
-      expect(askedAt, c.proposedFolder);
+      await t.pump();
+      expect(db.targetDb, p.join(tmp.path, 'chosen', '$dbLibraryId.db'));
       expect(db.installed, isTrue);
       expect(find.text('המסד עודכן'), findsOneWidget);
       expect(find.text('סגירה'), findsOneWidget);
@@ -488,7 +542,9 @@ void main() {
         await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
         await t.pump();
       }
+      await t.pump();
       expect(find.text('הכונן מוכן'), findsOneWidget);
+      expect(buttonWith(t, 'עדכון במחשב זה').onPressed, isNotNull);
       await t.tap(find.text('סגירה'));
       await t.pump();
       expect(closed, isTrue);

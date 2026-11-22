@@ -1,3 +1,5 @@
+import 'dart:ui' show PlatformDispatcher;
+
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -6,10 +8,12 @@ import 'dart:io';
 
 import 'src/controllers/app_controller.dart';
 import 'src/db/db_controller.dart' show dbMirrorDirName;
+import 'src/quick/quick_log.dart';
 import 'src/quick/quick_update_controller.dart';
 import 'src/quick/quick_update_screen.dart';
 import 'src/quick/quick_window.dart';
 import 'src/services/app_paths.dart';
+import 'src/update/app_update.dart' show appVersion;
 import 'src/services/single_instance.dart';
 import 'src/screens/app_shell.dart';
 import 'src/theme/app_theme.dart';
@@ -28,11 +32,33 @@ Future<void> main(List<String> args) async {
   _instanceLock = lock;
   // מתוך עדכוני אוצריא (או --quick): חלון קטן לעדכון המסד בלבד.
   if (args.contains('--quick') || AppPaths.launchedFromOtzariaUpdates()) {
+    _startQuickLog(args);
     QuickWindow.setUp(width: quickWindowWidth, height: quickWindowHeight, title: 'עדכון מסד הספרים');
+    if (QuickWindow.instance == null) QuickLog.warn('החלון הקומפקטי לא הוגדר (נשאר החלון הרגיל)');
     runApp(QuickUpdateApp(mirrorDir: p.join(AppPaths.programDir(), dbMirrorDirName)));
     return;
   }
   runApp(const OfflineUpdateApp());
+}
+
+/// לוג ליד התוכנה, ותפיסת שגיאות לא צפויות אליו.
+void _startQuickLog(List<String> args) {
+  final dir = AppPaths.programDir();
+  QuickLog.init(p.join(dir, 'logs'));
+  QuickLog.info(
+    '─── הפעלה: גרסה ${appVersion.isEmpty ? '(פיתוח)' : appVersion}, '
+    'Windows ${Platform.operatingSystemVersion}, תיקייה: $dir, exe: ${Platform.resolvedExecutable}, '
+    'TEMP: ${Platform.environment['TEMP']}, ארגומנטים: $args',
+  );
+  final previous = FlutterError.onError;
+  FlutterError.onError = (details) {
+    QuickLog.error('שגיאת ממשק', details.exception, details.stack);
+    previous?.call(details);
+  };
+  PlatformDispatcher.instance.onError = (error, stack) {
+    QuickLog.error('שגיאה לא צפויה', error, stack);
+    return false;
+  };
 }
 
 class QuickUpdateApp extends StatefulWidget {
