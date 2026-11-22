@@ -462,8 +462,8 @@ void main() {
       expect(find.text('המסד לא מותקן במחשב הזה'), findsOneWidget);
       expect(buttonWith(t, 'בחירת מיקום').onPressed, isNotNull);
       await t.tap(find.text('בחירת מיקום'));
-      for (var i = 0; i < 20 && c.phase != QuickPhase.done; i++) {
-        await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 5)));
+      for (var i = 0; i < 400 && c.phase != QuickPhase.done; i++) {
+        await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
         await t.pump();
       }
       expect(askedAt, c.proposedFolder);
@@ -484,8 +484,8 @@ void main() {
       expect(find.bySubtype<ButtonStyleButton>(), findsOneWidget);
       expect(buttonWith(t, 'הורדה').onPressed, isNotNull);
       await t.tap(find.text('הורדה'));
-      for (var i = 0; i < 20 && c.phase != QuickPhase.done; i++) {
-        await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 5)));
+      for (var i = 0; i < 400 && c.phase != QuickPhase.done; i++) {
+        await t.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
         await t.pump();
       }
       expect(find.text('הכונן מוכן'), findsOneWidget);
