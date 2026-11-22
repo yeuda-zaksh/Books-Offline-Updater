@@ -302,7 +302,7 @@ class QuickUpdateController extends ChangeNotifier {
       return;
     }
     QuickLog.info('התקנה: ${plan.action.name} (${plan.all.length} קבצים) אל ${db.targetDb} — ${plan.message}');
-    await db.install();
+    await db.install(title: plan.action == InstallAction.delta ? 'מעדכן את המסד' : 'מתקין את המסד');
     QuickLog.info('התקנה הסתיימה: ${db.messageIsError ? "שגיאה" : "ללא שגיאה"} — ${db.message}');
     if (_disposed) return;
     if (db.messageIsError || db.activity != null) {

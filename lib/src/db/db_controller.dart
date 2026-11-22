@@ -832,7 +832,8 @@ class DbController extends ChangeNotifier {
     }
   }
 
-  Future<void> install() async {
+  /// [title]: כותרת הפעולה בזמן ההתקנה (העדכון המהיר מציג "מתקין"/"מעדכן" במקום "מעתיק").
+  Future<void> install({String title = 'מעתיק את הספרים'}) async {
     final pl = plan;
     if (pl == null || !pl.canRun || busy) return;
     if (await _blockedByOtzaria()) return;
@@ -848,7 +849,7 @@ class DbController extends ChangeNotifier {
     }
     message = null;
     _cancel = false;
-    activity = DbActivity('מעתיק את הספרים');
+    activity = DbActivity(title);
     notifyListeners();
     var applied = 0;
     try {

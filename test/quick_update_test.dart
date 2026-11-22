@@ -114,7 +114,7 @@ class _FakeDb extends DbController {
       : InstallPlan(InstallAction.full, 'מלא', artifact: mirror!.manifest.full);
 
   @override
-  Future<void> install() async {
+  Future<void> install({String title = ''}) async {
     if (installNoop) return;
     if (installStopMessage != null) {
       message = installStopMessage;
